@@ -1004,7 +1004,17 @@ async function bufferSegment(segIdx) {
   const segWords = S.flatWords.filter(w => w.segIdx === segIdx);
   if (!segWords.length) { if (S.bufferToken === myToken) S.audioBuffer[segIdx] = { empty: true }; return; }
   const text = segWords.map(w => w.el.textContent.trim()).join(' ');
-  const voiceId = getVoiceId(seg.voice_type || 'narrator', seg.speaker || null);
+  // For inner_monologue, use the character's own registered voiceType (e.g. young_man for Kim Dokja)
+  // so their inner thoughts sound like them, not a generic monologue pool voice
+  let effectiveVoiceType = seg.voice_type || 'narrator';
+  if (effectiveVoiceType === 'inner_monologue' && seg.speaker) {
+    const reg = getRegistry();
+    const found = findInRegistry(reg, seg.speaker);
+    if (found && found.entry.voiceType && found.entry.voiceType \!== 'inner_monologue') {
+      effectiveVoiceType = found.entry.voiceType;
+    }
+  }
+  const voiceId = getVoiceId(effectiveVoiceType, seg.speaker || null);
   try {
     const blob = await fishTTS(text, voiceId, ctrl.signal);
     if (S.bufferToken !== myToken) return;
@@ -1317,7 +1327,7 @@ async function identifyUnknownsInChapter(segments, chIdx) {
         const norm = normalizeName(name);
         const pool = voicePools[result.voiceType] || [];
         if (!pool.length) return;
-        const usedIds = new Set(Object.values(reg).map(v => v.voiceId));
+        const usedIds = new Set(Object.values(reg).filter(e => e.voiceType === result.voiceType).map(v => v.voiceId));
         const voiceId = pool.find(id => !usedIds.has(id)) || pool[0];
         if (voiceId) {
           reg[norm] = { voiceId, voiceType: result.voiceType, cadence: result.cadence, identified: true, lastUsed: Date.now() };
@@ -1342,7 +1352,7 @@ function silentlyRegisterCharacters(newChars) {
     const pool = voicePools[c.voice_type] || [];
     // Never fall back to narrator pool -- skip if correct pool not ready
     if (!pool.length) continue;
-    const usedIds = new Set(Object.values(reg).map(v => v.voiceId));
+    const usedIds = new Set(Object.values(reg).filter(e => e.voiceType === c.voice_type).map(v => v.voiceId));
     const voiceId = pool.find(id => !usedIds.has(id)) || pool[0];
     reg[norm] = { voiceId, voiceType: c.voice_type, lastUsed: 0 };
   }
@@ -1402,7 +1412,7 @@ async function buildCharacterBible(progressCb) {
     if (reg[norm]?.identified) continue;
     const pool = voicePools[info.voiceType] || [];
     if (!pool.length) continue;
-    const usedIds = new Set(Object.values(reg).map(v => v.voiceId));
+    const usedIds = new Set(Object.values(reg).filter(e => e.voiceType === info.voiceType).map(v => v.voiceId));
     const voiceId = pool.find(id => !usedIds.has(id)) || pool[Object.keys(reg).length % pool.length];
     reg[norm] = { voiceId, voiceType: info.voiceType, cadence: info.cadence, identified: true, lastUsed: 0 };
   }
