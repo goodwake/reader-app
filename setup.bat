@@ -10,8 +10,8 @@ git remote remove origin 2>nul
 git remote add origin https://github.com/goodwake/reader-app.git
 git branch -M main
 git add .
-git commit -m "initial setup"
-git push --set-upstream origin main
+git commit -m "initial setup" 2>nul
+git push --force --set-upstream origin main
 
 echo.
 echo  Setup complete! You can now use push.bat to push changes.
