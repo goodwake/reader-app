@@ -534,9 +534,37 @@ function renderLibrary() {
     bp.appendChild(bpf); info.append(bname, bmeta, bp);
     const ba = document.createElement('div'); ba.className = 'ba';
     const bch = document.createElement('div'); bch.className = 'bch'; bch.textContent = '›';
+    // Bible build button -- shows before opening the book
+    const bbible = document.createElement('div');
+    bbible.className = 'del';
+    bbible.title = 'Build character voices';
+    bbible.textContent = '⚡';
+    bbible.style.cssText = 'color:var(--gold);font-size:13px;';
+    bbible.addEventListener('click', (function(id){ return async function(ev){
+      ev.stopPropagation();
+      const book = S.books.find(b => b.id === id);
+      if (!book) return;
+      S.activeBook = book;
+      if (!book._epub) {
+        showGenOverlay('Loading Book', 'Restoring EPUB for voice build...');
+        const ok = await restoreEpub(book);
+        if (!ok) { hideGenOverlay(); toast('EPUB not found — re-add the book first'); return; }
+      }
+      showGenOverlay('Building Voices', 'Analyzing characters across chapters...', '');
+      setGenProgress(0);
+      await prefetchAllVoicePools();
+      const count = await buildCharacterBible(({ phase, pct }) => {
+        setGenStep(phase);
+        setGenProgress(pct);
+      });
+      hideGenOverlay();
+      if (count) toast('Built voices for ' + count + ' characters ⚡');
+      else toast('No characters found — try reading a chapter first');
+      S.activeBook = null;
+    }; })(b.id));
     const bdel = document.createElement('div'); bdel.className = 'del'; bdel.textContent = '✕';
     bdel.addEventListener('click', (function(id){ return function(ev){ deleteBook(id, ev); }; })(b.id));
-    ba.append(bch, bdel);
+    ba.append(bch, bbible, bdel);
     card.append(spine, info, ba);
     card.onclick = () => openBook(b.id);
     el.appendChild(card);
@@ -715,7 +743,7 @@ async function analyzeWithDeepSeek(text, chapterTitle, chIdx) {
           }
         }
         if (parsed.pov?.pov_type) priorPov = parsed.pov;
-        if (parsed.newCharacters?.length) silentlyRegisterCharacters(parsed.newCharacters);
+        if (parsed.newCharacters?.length) silentlyRegisterCharacters(parsed.newCharacters, chIdx);
       }
       priorCtx = chunk[chunk.length-1]?.text?.slice(-150) || '';
     } catch(e) {
@@ -779,6 +807,40 @@ function normalizeName(name) {
   return name.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ');
 }
 
+// Returns true if the name looks like a real proper name (not a generic descriptor).
+// Generic = instantly side character unless they appear very frequently.
+const GENERIC_DESCRIPTORS = new Set([
+  'man','woman','boy','girl','child','person','figure','shadow','voice','stranger',
+  'guard','soldier','knight','warrior','mage','hunter','adventurer','merchant',
+  'servant','receptionist','clerk','citizen','villager','elder','doctor','nurse',
+  'officer','captain','commander','leader','boss','chief','king','queen','lord',
+  'lady','master','teacher','student','priest','monk','noble','attendant','aide',
+  'assistant','manager','director','agent','spy','assassin','thief','bandit','monster',
+  'creature','beast','demon','spirit','god','hero','villain','ally','enemy','rival',
+  'old man','old woman','young man','young woman','middle aged man','middle aged woman',
+  'unnamed','unknown','???','nameless','the narrator','narrator',
+]);
+
+function isGenericName(name) {
+  const lower = name.toLowerCase().trim();
+  // Exact match against generic list
+  if (GENERIC_DESCRIPTORS.has(lower)) return true;
+  // Starts with a generic word followed by a number or letter (e.g. "guard a", "soldier 1")
+  for (const g of GENERIC_DESCRIPTORS) {
+    if (lower === g || lower.startsWith(g + ' ') || lower.endsWith(' ' + g)) return true;
+  }
+  return false;
+}
+
+// Named characters are always main candidates.
+// Unnamed/generic characters need 5+ chapter appearances to qualify as main.
+function classifyAsMain(name, appearanceCount = 0) {
+  if (!isGenericName(name)) return true;            // has a real name -> main
+  if (appearanceCount >= 5) return true;             // unnamed but story-critical
+  return false;                                       // unnamed + rare -> side
+}
+
+
 function findInRegistry(reg, rawName) {
   const norm = normalizeName(rawName);
   if (reg[norm]) return { key: norm, entry: reg[norm] };
@@ -828,10 +890,10 @@ function getVoiceId(voiceType, speakerName) {
     if (assignedId) {
       const keys = Object.keys(reg);
       if (keys.length >= REGISTRY_MAX_SIZE) {
-        const oldest = Object.entries(reg).sort((a,b) => (a[1].lastUsed||0)-(b[1].lastUsed||0))[0];
+        const oldest = Object.entries(reg).filter(([,e]) => !e.isMain).sort((a,b) => (a[1].lastUsed||0)-(b[1].lastUsed||0))[0];
         if (oldest) delete reg[oldest[0]];
       }
-      reg[norm] = { voiceId: assignedId, voiceType, lastUsed: Date.now() };
+      reg[norm] = { voiceId: assignedId, voiceType, isMain: classifyAsMain(norm, 0), firstChapter: S.activeChIdx || 0, lastUsed: Date.now() };
       saveLocal();
     }
     return assignedId;
@@ -1010,7 +1072,7 @@ async function bufferSegment(segIdx) {
   if (effectiveVoiceType === 'inner_monologue' && seg.speaker) {
     const reg = getRegistry();
     const found = findInRegistry(reg, seg.speaker);
-    if (found && found.entry.voiceType && found.entry.voiceType \!== 'inner_monologue') {
+    if (found && found.entry.voiceType && found.entry.voiceType !== 'inner_monologue') {
       effectiveVoiceType = found.entry.voiceType;
     }
   }
@@ -1288,7 +1350,8 @@ async function lookAheadIdentify(name, fromChIdx, maxChapters = 3) {
   return promise;
 }
 
-function mapIdentityToVoiceType({ gender, age, cadence }) {
+function mapIdentityToVoiceType({ gender, age, tone, energy, speech, cadence }) {
+  // Determine the base voice pool (for fallback only)
   let voiceType = 'narrator';
   if (gender === 'male') {
     if (age === 'child') voiceType = 'child';
@@ -1303,7 +1366,57 @@ function mapIdentityToVoiceType({ gender, age, cadence }) {
     else if (age === 'old') voiceType = 'old_woman';
     else voiceType = 'adult_woman';
   }
-  return { voiceType, cadence: cadence || null };
+  return { voiceType, tone: tone || cadence || null, energy: energy || null, speech: speech || null };
+}
+
+// Build a descriptive Fish Audio search query from personality traits
+// e.g. { gender:'male', age:'young_adult', tone:'sardonic', energy:'low' } → "tired sarcastic young man"
+function buildPersonalityQuery({ gender, age, tone, energy, speech }) {
+  const genderWord = gender === 'female' ? 'woman' : 'man';
+  const ageMap = { child: 'child', teen: 'teenage', young_adult: 'young', adult: 'adult', old: 'elderly' };
+  const ageWord = ageMap[age] || 'adult';
+
+  // Tone → descriptive adjectives
+  const toneMap = {
+    sardonic: 'dry sarcastic', dry: 'dry sarcastic', deadpan: 'dry deadpan',
+    warm: 'warm friendly', cheerful: 'cheerful upbeat', bright: 'bright cheerful',
+    cold: 'cold detached', stoic: 'stoic calm', flat: 'flat monotone',
+    gruff: 'gruff rough', harsh: 'harsh gruff', intense: 'intense dramatic',
+    soft: 'soft gentle', gentle: 'soft gentle', quiet: 'quiet soft',
+    tired: 'tired weary', weary: 'tired weary', exhausted: 'exhausted weary',
+    sharp: 'sharp crisp', formal: 'formal measured', smooth: 'smooth calm',
+    deep: 'deep resonant', high: 'high light',
+  };
+  const toneWords = toneMap[tone] || '';
+
+  // Low energy → add weary/quiet modifier unless tone already covers it
+  const energyWords = (energy === 'low' && !toneWords.includes('tired') && !toneWords.includes('weary') && !toneWords.includes('quiet'))
+    ? 'quiet' : '';
+
+  const parts = [toneWords, energyWords, ageWord, genderWord].filter(Boolean);
+  return [...new Set(parts)].join(' '); // dedupe, e.g. "dry sarcastic young man"
+}
+
+// Search Fish Audio directly with a personality query, return a voice ID or null
+async function fetchPersonalityVoice(identity, fallbackVoiceType) {
+  const query = buildPersonalityQuery(identity);
+  if (!query) return null;
+  try {
+    const url = WORKER + '/fish/model?page_size=8&page_number=1&language=en&sort_by=score&title=' + encodeURIComponent(query);
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const items = data.items || [];
+    if (!items.length) return null;
+    // Pick the top result that isn't already in use by another character
+    const reg = getRegistry();
+    const used = new Set(Object.values(reg).map(e => e.voiceId));
+    const fresh = items.find(it => it._id && !used.has(it._id));
+    return (fresh || items[0])?._id || null;
+  } catch(e) {
+    console.warn('fetchPersonalityVoice failed for query:', buildPersonalityQuery(identity), e);
+    return null;
+  }
 }
 
 async function identifyUnknownsInChapter(segments, chIdx) {
@@ -1330,7 +1443,7 @@ async function identifyUnknownsInChapter(segments, chIdx) {
         const usedIds = new Set(Object.values(reg).filter(e => e.voiceType === result.voiceType).map(v => v.voiceId));
         const voiceId = pool.find(id => !usedIds.has(id)) || pool[0];
         if (voiceId) {
-          reg[norm] = { voiceId, voiceType: result.voiceType, cadence: result.cadence, identified: true, lastUsed: Date.now() };
+          reg[norm] = { voiceId, voiceType: result.voiceType, tone: result.tone, energy: result.energy, isMain: classifyAsMain(norm, 0), identified: true, firstChapter: chIdx, lastUsed: Date.now() };
           for (const seg of segments) {
             if (seg.speaker && normalizeName(seg.speaker) === norm) seg.voice_type = result.voiceType;
           }
@@ -1352,9 +1465,10 @@ function silentlyRegisterCharacters(newChars) {
     const pool = voicePools[c.voice_type] || [];
     // Never fall back to narrator pool -- skip if correct pool not ready
     if (!pool.length) continue;
+    const mainVoiceIds = new Set(Object.values(reg).filter(e => e.isMain).map(e => e.voiceId));
     const usedIds = new Set(Object.values(reg).filter(e => e.voiceType === c.voice_type).map(v => v.voiceId));
-    const voiceId = pool.find(id => !usedIds.has(id)) || pool[0];
-    reg[norm] = { voiceId, voiceType: c.voice_type, lastUsed: 0 };
+    const voiceId = pool.find(id => !usedIds.has(id) && !mainVoiceIds.has(id)) || pool.find(id => !usedIds.has(id)) || pool[0];
+    reg[norm] = { voiceId, voiceType: c.voice_type, isMain: classifyAsMain(norm, 0), firstChapter: chIdx, lastUsed: 0 };
   }
   saveLocal();
 }
@@ -1386,7 +1500,7 @@ async function buildCharacterBible(progressCb) {
   const allDiscovered = {};
   for (let si = 0; si < samples.length; si++) {
     if (progressCb) progressCb({ phase: 'Identifying characters', pct: 30 + (si/samples.length)*60 });
-    const prompt = 'Identify named characters in this text. Return ONLY a JSON array: [{"name":"...","gender":"male"|"female"|"unknown","age":"child"|"teen"|"young_adult"|"adult"|"old","cadence":"soft"|"sharp"|"loud"|"deep"|"gruff"|"smooth"|"high"|"cold"|null}]\nSkip characters with unknown gender. Do NOT include plot.\nTEXT:\n' + samples[si];
+    const prompt = 'Identify named characters in this text. Return ONLY a JSON array with one object per character:\n[{"name":"...","gender":"male"|"female"|"unknown","age":"child"|"teen"|"young_adult"|"adult"|"old","tone":"sardonic"|"dry"|"warm"|"cold"|"cheerful"|"gruff"|"soft"|"tired"|"intense"|"stoic"|"sharp"|"gentle"|"formal"|"smooth"|null,"energy":"high"|"medium"|"low"|null,"speech":"terse"|"verbose"|"casual"|"formal"|null}]\nRules: Skip characters whose gender is unknown. Base tone/energy on HOW they speak, not what happens to them. Do NOT include plot details.\nTEXT:\n' + samples[si];
     try {
       const res = await fetchRetry(WORKER + '/deepseek', {
         method: 'POST', headers: workerHeaders(),
@@ -1408,13 +1522,36 @@ async function buildCharacterBible(progressCb) {
     } catch(e) {}
   }
   if (progressCb) progressCb({ phase: 'Assigning voices', pct: 90 });
-  for (const [norm, info] of Object.entries(allDiscovered)) {
+  // Named chars first (best voices), then unnamed sorted by frequency
+  const bibleEntries = Object.entries(allDiscovered).sort((a, b) => {
+    const aMain = classifyAsMain(a[0], a[1].count);
+    const bMain = classifyAsMain(b[0], b[1].count);
+    if (aMain !== bMain) return bMain ? 1 : -1;
+    return b[1].count - a[1].count;
+  });
+  for (let ei = 0; ei < bibleEntries.length; ei++) {
+    const [norm, info] = bibleEntries[ei];
     if (reg[norm]?.identified) continue;
-    const pool = voicePools[info.voiceType] || [];
-    if (!pool.length) continue;
-    const usedIds = new Set(Object.values(reg).filter(e => e.voiceType === info.voiceType).map(v => v.voiceId));
-    const voiceId = pool.find(id => !usedIds.has(id)) || pool[Object.keys(reg).length % pool.length];
-    reg[norm] = { voiceId, voiceType: info.voiceType, cadence: info.cadence, identified: true, lastUsed: 0 };
+    if (progressCb) progressCb({ phase: 'Finding voice for ' + info.name, pct: 90 + (ei / bibleEntries.length) * 9 });
+    const isMain = classifyAsMain(norm, info.count);
+    let voiceId = await fetchPersonalityVoice(info, info.voiceType);
+    if (!voiceId) {
+      const pool = voicePools[info.voiceType] || [];
+      if (!pool.length) continue;
+      const mainVoiceIds = new Set(Object.values(reg).filter(e => e.isMain).map(e => e.voiceId));
+      const usedIds = new Set(Object.values(reg).filter(e => e.voiceType === info.voiceType).map(v => v.voiceId));
+      voiceId = (isMain
+        ? pool.find(id => !usedIds.has(id))
+        : pool.find(id => !usedIds.has(id) && !mainVoiceIds.has(id)) || pool.find(id => !usedIds.has(id))
+      ) || pool[Object.keys(reg).length % pool.length];
+    }
+    if (voiceId) {
+      reg[norm] = {
+        voiceId, voiceType: info.voiceType, tone: info.tone, energy: info.energy,
+        isMain, firstChapter: info.firstChapter ?? 0, identified: true, lastUsed: 0
+      };
+      console.log('Bible:', info.name, isMain ? '[MAIN]' : '[SIDE]', '->', buildPersonalityQuery(info), '| voice:', voiceId);
+    }
   }
   saveLocal();
   saveSyncToDrive();
@@ -1457,58 +1594,250 @@ function closeSettings() { document.getElementById('settingsPanel').classList.re
 function setFontSize(v) { document.documentElement.style.setProperty('--font-size', v+'px'); document.getElementById('fontVal').textContent = v; }
 function setLineHeight(v) { const lh=(v/10).toFixed(1); document.documentElement.style.setProperty('--line-height', lh); document.getElementById('lineVal').textContent = lh; }
 
+// ════════════════════════════════════════════════════════
+// VOICE SAMPLING + PICKER
+// ════════════════════════════════════════════════════════
+const SAMPLE_PHRASES = {
+  narrator:        "In the beginning, there was only silence, and the weight of what was to come.",
+  young_man:       "I didn't ask for any of this. Just tell me what you need from me.",
+  adult_man:       "Understood. I'll handle it. Don't worry about the details.",
+  old_man:         "I've seen this before, long ago. Listen carefully — it matters.",
+  teen_boy:        "Wait — seriously? You want me to do that? Right now?",
+  young_woman:     "Oh! Sorry, I didn't see you there. Are you alright?",
+  adult_woman:     "Let me be clear. This is the only chance we're going to get.",
+  old_woman:       "Come now, child. I've lived long enough to know how this ends.",
+  teen_girl:       "I can't believe this is happening. What do we do now?",
+  child:           "Um... hello? Is somebody there? I'm not scared, I promise.",
+  inner_monologue: "This is fine. Everything is fine. I just need to focus.",
+  system:          "Notification received. Processing complete. Standing by.",
+};
+
+let _sampleAudio = null;
+async function sampleVoice(voiceId, voiceType, btnEl) {
+  if (!voiceId) return;
+  // Stop any playing sample
+  if (_sampleAudio) { _sampleAudio.pause(); _sampleAudio = null; }
+  const phrase = SAMPLE_PHRASES[voiceType] || SAMPLE_PHRASES.narrator;
+  const origText = btnEl ? btnEl.textContent : '';
+  if (btnEl) { btnEl.textContent = '...'; btnEl.disabled = true; }
+  try {
+    const blob = await fishTTS(phrase, voiceId, null);
+    const url = URL.createObjectURL(blob);
+    _sampleAudio = new Audio(url);
+    _sampleAudio.playbackRate = S.speed || 1.0;
+    _sampleAudio.play();
+    if (btnEl) btnEl.textContent = '■ Stop';
+    _sampleAudio.onended = () => { if (btnEl) { btnEl.textContent = origText; btnEl.disabled = false; } _sampleAudio = null; URL.revokeObjectURL(url); };
+    if (btnEl) btnEl.onclick = () => { _sampleAudio?.pause(); _sampleAudio = null; URL.revokeObjectURL(url); btnEl.textContent = origText; btnEl.disabled = false; btnEl.onclick = () => sampleVoice(voiceId, voiceType, btnEl); };
+  } catch(e) {
+    if (btnEl) { btnEl.textContent = origText; btnEl.disabled = false; }
+    toast('Sample failed: ' + e.message);
+  }
+}
+
+async function fetchVoiceCandidates(identity, count = 6) {
+  const query = buildPersonalityQuery(identity);
+  if (!query) return [];
+  const candidates = [];
+  const seen = new Set();
+  const reg = getRegistry();
+  const allUsed = new Set(Object.values(reg).map(e => e.voiceId));
+  for (let page = 1; page <= 4 && candidates.length < count; page++) {
+    try {
+      const url = WORKER + '/fish/model?page_size=10&page_number=' + page + '&language=en&sort_by=score&title=' + encodeURIComponent(query);
+      const res = await fetch(url);
+      if (!res.ok) break;
+      const data = await res.json();
+      for (const item of (data.items || [])) {
+        if (item._id && !seen.has(item._id)) {
+          seen.add(item._id);
+          candidates.push({ id: item._id, title: item.title || item._id.slice(0, 8) + '...', inUse: allUsed.has(item._id) });
+          if (candidates.length >= count) break;
+        }
+      }
+    } catch(e) { break; }
+  }
+  return candidates;
+}
+
+let _pickerChar = null;
+function openVoicePicker(charName) {
+  _pickerChar = charName;
+  const modal = document.getElementById('voicePickerModal');
+  const reg = getRegistry();
+  const entry = reg[charName];
+  modal.style.display = 'flex';
+  document.getElementById('vpCharName').textContent = charName.charAt(0).toUpperCase() + charName.slice(1);
+  const desc = [entry?.tone, entry?.energy, VOICE_TYPES[entry?.voiceType]?.label].filter(Boolean).join(' · ');
+  document.getElementById('vpCharDesc').textContent = desc || 'Unknown personality';
+  const cands = document.getElementById('vpCandidates');
+  cands.innerHTML = '<div style="color:var(--text-mute);text-align:center;padding:20px">Searching voices...</div>';
+  // Fetch candidates async
+  const identity = { gender: entry?.voiceType?.includes('woman') || entry?.voiceType?.includes('girl') ? 'female' : 'male',
+    age: entry?.voiceType?.includes('teen') ? 'teen' : entry?.voiceType?.includes('old') ? 'old' : entry?.voiceType?.includes('child') ? 'child' : entry?.voiceType?.includes('young') ? 'young_adult' : 'adult',
+    tone: entry?.tone, energy: entry?.energy };
+  fetchVoiceCandidates(identity, 6).then(candidates => {
+    cands.innerHTML = '';
+    if (!candidates.length) { cands.innerHTML = '<div style="color:var(--text-mute);text-align:center;padding:20px">No voices found for this personality</div>'; return; }
+    candidates.forEach(c => {
+      const row = document.createElement('div');
+      row.className = 'vp-row';
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border);';
+      const label = document.createElement('div');
+      label.style.cssText = 'flex:1;font-size:13px;color:var(--text-dim);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      label.textContent = c.id;
+      if (c.id === entry?.voiceId) label.style.color = 'var(--gold)';
+      const sampleBtn = document.createElement('button');
+      sampleBtn.className = 'ctrl csm'; sampleBtn.style.cssText = 'font-size:12px;width:auto;padding:0 10px;';
+      sampleBtn.textContent = '▶ Sample';
+      sampleBtn.onclick = () => sampleVoice(c.id, entry?.voiceType || 'narrator', sampleBtn);
+      const selBtn = document.createElement('button');
+      selBtn.className = 'ctrl csm';
+      selBtn.style.cssText = 'font-size:12px;width:auto;padding:0 10px;' + (c.id === entry?.voiceId ? 'border-color:var(--gold);color:var(--gold);' : '');
+      selBtn.textContent = c.id === entry?.voiceId ? '✓ Current' : 'Select';
+      selBtn.onclick = () => { selectVoiceForChar(charName, c.id); selBtn.textContent = '✓ Selected'; selBtn.style.color = 'var(--gold)'; selBtn.style.borderColor = 'var(--gold)'; };
+      row.append(label, sampleBtn, selBtn);
+      cands.appendChild(row);
+    });
+  });
+}
+
+function closeVoicePicker() {
+  document.getElementById('voicePickerModal').style.display = 'none';
+  if (_sampleAudio) { _sampleAudio.pause(); _sampleAudio = null; }
+  _pickerChar = null;
+}
+
+function selectVoiceForChar(charName, voiceId) {
+  const reg = getRegistry();
+  if (reg[charName]) { reg[charName].voiceId = voiceId; saveLocal(); clearAudioBuffer(); toast('Voice updated for ' + charName); }
+}
+
 function renderVoiceList() {
   const list = document.getElementById('voiceList');
   if (!list) return;
   list.innerHTML = '';
   const reg = getRegistry();
-  const showSpoilers = localStorage.getItem('show_character_voices') === '1';
+  const noSpoiler = localStorage.getItem('nospoiler') === '1';
+  const currentCh = S.activeChIdx || 0;
 
-  // Smart Identify toggle
+  // ── Smart Identify toggle ──
   const smartRow = document.createElement('div');
   smartRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);margin-bottom:8px;';
-  smartRow.innerHTML = '<div><div style="font-size:14px;color:var(--text)">Smart Identification</div><div style="font-size:11px;color:var(--text-mute);margin-top:2px">Auto-detect ambiguous characters via look-ahead</div></div>'
+  smartRow.innerHTML = '<div><div style="font-size:14px;color:var(--text)">Smart Identification</div>'
+    + '<div style="font-size:11px;color:var(--text-mute);margin-top:2px">Auto-detect characters via look-ahead</div></div>'
     + '<input type="checkbox" ' + (S.smartIdentify ? 'checked' : '') + ' onclick="toggleSmartIdentify(this.checked)" style="transform:scale(1.3)">';
   list.appendChild(smartRow);
 
-  // Bible build button
+  // ── No-spoiler toggle ──
+  const spoilerRow = document.createElement('div');
+  spoilerRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);margin-bottom:12px;';
+  spoilerRow.innerHTML = '<div><div style="font-size:14px;color:var(--text)">No-Spoiler Mode</div>'
+    + '<div style="font-size:11px;color:var(--text-mute);margin-top:2px">Hide characters not yet introduced</div></div>'
+    + '<input type="checkbox" ' + (noSpoiler ? 'checked' : '') + ' onclick="toggleNoSpoiler(this.checked)" style="transform:scale(1.3)">';
+  list.appendChild(spoilerRow);
+
+  // ── Bible build button ──
   const bibleBtn = document.createElement('button');
   bibleBtn.className = 'pcbtn';
-  bibleBtn.style.cssText = 'margin-bottom:8px;background:var(--gold-glow);border-color:var(--gold);color:var(--gold2);width:100%;';
-  bibleBtn.textContent = '\u26a1 Build Character Bible';
+  bibleBtn.style.cssText = 'margin-bottom:12px;background:var(--gold-glow);border-color:var(--gold);color:var(--gold2);width:100%;';
+  bibleBtn.textContent = '⚡ Build Character Bible';
   bibleBtn.onclick = () => runBibleBuild();
   list.appendChild(bibleBtn);
 
-  // Spoiler toggle
-  const toggle = document.createElement('div');
-  toggle.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 0;';
-  toggle.innerHTML = '<div style="font-size:13px;color:var(--text-dim)">Show character voices <span style="color:var(--text-mute);font-size:11px">(spoilers)</span></div>'
-    + '<input type="checkbox" ' + (showSpoilers ? 'checked' : '') + ' onclick="toggleCharacterVisibility(this.checked)">';
-  list.appendChild(toggle);
+  // ── Character list ──
+  const entries = Object.entries(reg);
+  if (!entries.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'font-size:13px;color:var(--text-mute);text-align:center;padding:16px 0;';
+    empty.textContent = 'No characters identified yet. Build the bible or start reading.';
+    list.appendChild(empty);
+  } else {
+    // Split into main and side
+    const visible = entries.filter(([, e]) => !noSpoiler || (e.firstChapter ?? 0) <= currentCh);
+    const hidden = entries.length - visible.length;
+    const mains = visible.filter(([, e]) => e.isMain);
+    const sides = visible.filter(([, e]) => !e.isMain);
 
-  if (Object.entries(reg).length && showSpoilers) {
-    const t = document.createElement('div'); t.className = 'vlt'; t.textContent = 'Named Characters'; list.appendChild(t);
-    Object.entries(reg).forEach(([name, info]) => {
-      const row = document.createElement('div'); row.className = 'vrow';
-      const dName = name.charAt(0).toUpperCase()+name.slice(1);
-      const typLabel = VOICE_TYPES[info.voiceType]?.label || info.voiceType;
-      const inCorrectPool = voicePools[info.voiceType]?.includes(info.voiceId);
-      row.innerHTML = '<div style="flex:1;min-width:0"><div class="vlbl">'+dName+'</div><div class="vtyp">'+typLabel+(inCorrectPool?' · <span style="color:var(--gold)">verified</span>':' · <span style="color:var(--red)">pool mismatch</span>')+'</div></div>'
-        +'<input class="viid" value="'+(info.voiceId||'')+'" oninput="setCharVoiceOverride(\''+name+'\',this.value)">';
-      list.appendChild(row);
-    });
+    const renderSection = (label, chars) => {
+      if (!chars.length) return;
+      const hdr = document.createElement('div'); hdr.className = 'vlt'; hdr.textContent = label; list.appendChild(hdr);
+      chars.forEach(([norm, info]) => {
+        const card = document.createElement('div');
+        card.style.cssText = 'background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;';
+        const top = document.createElement('div');
+        top.style.cssText = 'display:flex;align-items:center;gap:8px;';
+        const nameEl = document.createElement('div');
+        nameEl.style.cssText = 'flex:1;font-size:14px;color:var(--text);font-weight:500;';
+        nameEl.textContent = norm.charAt(0).toUpperCase() + norm.slice(1);
+        const badge = document.createElement('div');
+        badge.style.cssText = 'font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--gold);border:1px solid var(--gold);border-radius:4px;padding:2px 6px;';
+        badge.textContent = VOICE_TYPES[info.voiceType]?.label || info.voiceType;
+        top.append(nameEl, badge);
+
+        const meta = document.createElement('div');
+        meta.style.cssText = 'font-size:11px;color:var(--text-mute);margin-top:3px;';
+        const parts = [info.tone, info.energy ? info.energy + ' energy' : null].filter(Boolean);
+        meta.textContent = parts.length ? parts.join(' · ') : 'auto-assigned';
+
+        const btns = document.createElement('div');
+        btns.style.cssText = 'display:flex;gap:6px;margin-top:8px;';
+
+        const sampleBtn = document.createElement('button');
+        sampleBtn.className = 'ctrl csm';
+        sampleBtn.style.cssText = 'font-size:12px;width:auto;padding:0 12px;height:32px;';
+        sampleBtn.textContent = '▶ Sample';
+        sampleBtn.onclick = () => sampleVoice(info.voiceId, info.voiceType, sampleBtn);
+
+        const changeBtn = document.createElement('button');
+        changeBtn.className = 'ctrl csm';
+        changeBtn.style.cssText = 'font-size:12px;width:auto;padding:0 12px;height:32px;border-color:var(--border2);';
+        changeBtn.textContent = '✏ Change';
+        changeBtn.onclick = () => openVoicePicker(norm);
+
+        btns.append(sampleBtn, changeBtn);
+        card.append(top, meta, btns);
+        list.appendChild(card);
+      });
+    };
+
+    renderSection('Main Characters', mains);
+    renderSection('Supporting Characters', sides);
+
+    if (hidden > 0) {
+      const hid = document.createElement('div');
+      hid.style.cssText = 'font-size:12px;color:var(--text-mute);text-align:center;padding:8px 0;';
+      hid.textContent = hidden + ' character' + (hidden > 1 ? 's' : '') + ' hidden (no-spoiler mode)';
+      list.appendChild(hid);
+    }
   }
 
-  const t2 = document.createElement('div'); t2.className = 'vlt'; t2.style.paddingTop = '12px'; t2.textContent = 'Voice Type Defaults'; list.appendChild(t2);
+  // ── Side character voice banks (collapsed) ──
+  const banksToggle = document.createElement('div');
+  banksToggle.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:10px 0;margin-top:8px;border-top:1px solid var(--border);cursor:pointer;';
+  banksToggle.innerHTML = '<div style="font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-mute)">Side Character Voice Banks</div><div id="bankChevron" style="color:var(--text-mute);font-size:14px;">▸</div>';
+  const banksBody = document.createElement('div');
+  banksBody.id = 'voiceBanksBody';
+  banksBody.style.display = 'none';
+  banksToggle.onclick = () => {
+    const open = banksBody.style.display !== 'none';
+    banksBody.style.display = open ? 'none' : 'block';
+    document.getElementById('bankChevron').textContent = open ? '▸' : '▾';
+  };
+
   Object.entries(VOICE_TYPES).forEach(([type, info]) => {
-    const row = document.createElement('div'); row.className = 'vrow';
+    const row = document.createElement('div'); row.className = 'vrow'; row.style.marginBottom = '6px';
     const manual = S.customVoices[type] || S.activeBook?.voiceMap?.[type] || '';
     const pool = voicePools[type] || [];
     const isAuto = !manual && pool.length > 0;
-    row.innerHTML = '<div style="flex:1;min-width:0"><div class="vlbl">'+info.label+'</div><div class="vtyp">'+info.desc+(isAuto?' · <span style="color:var(--gold)">pool:'+pool.length+'</span>':'')+'</div></div>'
-      +'<input class="viid" placeholder="'+(isAuto?'auto':'voice ID...')+'" value="'+manual+'" oninput="setVoiceOverride(\''+type+'\',this.value)">';
-    list.appendChild(row);
+    row.innerHTML = '<div style="flex:1;min-width:0"><div class="vlbl">'+info.label+'</div>'
+      + '<div class="vtyp">'+info.desc+(isAuto ? ' · <span style="color:var(--gold)">'+pool.length+' voices</span>' : '')+'</div></div>'
+      + '<input class="viid" placeholder="'+(isAuto ? 'auto' : 'voice ID...')+'" value="'+manual+'" oninput="setVoiceOverride(\''+type+'\',this.value)">';
+    banksBody.appendChild(row);
   });
+
+  list.appendChild(banksToggle);
+  list.appendChild(banksBody);
 }
 
 function toggleSmartIdentify(on) { S.smartIdentify = !!on; saveLocal(); toast(on ? 'Smart Identify ON' : 'Smart Identify OFF'); }

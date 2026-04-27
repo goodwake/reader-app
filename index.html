@@ -199,6 +199,17 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;heigh
 .desktop .sidebar{display:flex}
 .desktop .chbk{display:none}
 .desktop .rtop .rbtn:first-child{display:none}
+
+/* voice picker modal */
+.vpmodal{display:none;position:fixed;inset:0;background:#0009;z-index:100;align-items:center;justify-content:center;padding:20px}
+.vpinner{background:var(--surface);border:1px solid var(--border2);border-radius:16px;width:min(480px,100%);max-height:80vh;display:flex;flex-direction:column;overflow:hidden}
+.vphdr{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:12px}
+.vphdr-info{flex:1}
+.vphdr-name{font-size:18px;font-weight:300;color:var(--text)}
+.vphdr-desc{font-size:12px;color:var(--text-mute);margin-top:3px;letter-spacing:.05em}
+.vphdr-cls{background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text-dim);width:30px;height:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px;flex-shrink:0}
+.vphdr-cls:hover{color:var(--text);background:var(--border)}
+.vpcands{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
 </style>
 </head>
 <body>
@@ -381,5 +392,20 @@ window.addEventListener('resize', () => {
 <script src="https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async></script>
 <script src="app.js"></script>
+
+<\!-- Voice Picker Modal -->
+<div id="voicePickerModal" class="vpmodal" onclick="if(event.target===this)closeVoicePicker()">
+  <div class="vpinner">
+    <div class="vphdr">
+      <div class="vphdr-info">
+        <div class="vphdr-name" id="vpCharName">Character</div>
+        <div class="vphdr-desc" id="vpCharDesc">Searching personality-matched voices...</div>
+      </div>
+      <div class="vphdr-cls" onclick="closeVoicePicker()">X</div>
+    </div>
+    <div class="vpcands" id="vpCandidates"></div>
+  </div>
+</div>
+
 </body>
 </html>
