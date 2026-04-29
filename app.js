@@ -1657,7 +1657,12 @@ async function fetchVoiceCandidates(identity, count = 8) {
       for (const item of (data.items || [])) {
         if (item._id && !seen.has(item._id)) {
           seen.add(item._id);
-          candidates.push({ id: item._id, inUse: allUsed.has(item._id) });
+          candidates.push({
+            id: item._id,
+            name: item.title || item.name || '',
+            description: item.description || item.tags?.join(', ') || '',
+            inUse: allUsed.has(item._id)
+          });
           if (candidates.length >= count) break;
         }
       }
@@ -1701,8 +1706,14 @@ function openVoicePicker(charName) {
         row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border);';
         const isCurrent = c.id === entry.voiceId;
         const label = document.createElement('div');
-        label.style.cssText = 'flex:1;font-size:12px;color:' + (isCurrent ? 'var(--gold)' : 'var(--text-dim)') + ';font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-        label.textContent = c.id;
+        label.style.cssText = 'flex:1;min-width:0;';
+        const nameLine = document.createElement('div');
+        nameLine.style.cssText = 'font-size:13px;font-weight:600;color:' + (isCurrent ? 'var(--gold)' : 'var(--text)') + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        nameLine.textContent = c.name || c.id;
+        const descLine = document.createElement('div');
+        descLine.style.cssText = 'font-size:11px;color:var(--text-mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px;';
+        descLine.textContent = c.description || c.id.slice(0, 16) + '…';
+        label.append(nameLine, descLine);
         if (isCurrent) label.title = 'Currently assigned';
         const sampleBtn = document.createElement('button');
         sampleBtn.className = 'ctrl csm';
@@ -1720,7 +1731,7 @@ function openVoicePicker(charName) {
           // Update all select buttons in modal
           cands.querySelectorAll('button:last-child').forEach(b => { b.textContent = 'Use'; b.style.color = ''; b.style.borderColor = ''; });
           selBtn.textContent = '✓'; selBtn.style.color = 'var(--gold)'; selBtn.style.borderColor = 'var(--gold)';
-          label.style.color = 'var(--gold)';
+          nameLine.style.color = 'var(--gold)';
         };
         row.append(label, sampleBtn, selBtn);
         cands.appendChild(row);
