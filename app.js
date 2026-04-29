@@ -834,10 +834,14 @@ function isGenericName(name) {
 
 // Named characters are always main candidates.
 // Unnamed/generic characters need 5+ chapter appearances to qualify as main.
-function classifyAsMain(name, appearanceCount = 0) {
-  if (!isGenericName(name)) return true;            // has a real name -> main
-  if (appearanceCount >= 5) return true;             // unnamed but story-critical
-  return false;                                       // unnamed + rare -> side
+function classifyAsMain(name, appearanceCount = null) {
+  if (!isGenericName(name)) {
+    // Named character: if we have count data (bible), need 2+ appearances.
+    // Real-time registration (no count) -> assume main for now.
+    return appearanceCount === null || appearanceCount >= 2;
+  }
+  // Unnamed/generic: must appear in 5+ chapters to be story-critical
+  return (appearanceCount ?? 0) >= 5;
 }
 
 
@@ -893,7 +897,7 @@ function getVoiceId(voiceType, speakerName) {
         const oldest = Object.entries(reg).filter(([,e]) => !e.isMain).sort((a,b) => (a[1].lastUsed||0)-(b[1].lastUsed||0))[0];
         if (oldest) delete reg[oldest[0]];
       }
-      reg[norm] = { voiceId: assignedId, voiceType, isMain: classifyAsMain(norm, 0), firstChapter: S.activeChIdx || 0, lastUsed: Date.now() };
+      reg[norm] = { voiceId: assignedId, voiceType, isMain: classifyAsMain(norm, null), firstChapter: S.activeChIdx || 0, lastUsed: Date.now() };
       saveLocal();
     }
     return assignedId;
@@ -1443,7 +1447,7 @@ async function identifyUnknownsInChapter(segments, chIdx) {
         const usedIds = new Set(Object.values(reg).filter(e => e.voiceType === result.voiceType).map(v => v.voiceId));
         const voiceId = pool.find(id => !usedIds.has(id)) || pool[0];
         if (voiceId) {
-          reg[norm] = { voiceId, voiceType: result.voiceType, tone: result.tone, energy: result.energy, isMain: classifyAsMain(norm, 0), identified: true, firstChapter: chIdx, lastUsed: Date.now() };
+          reg[norm] = { voiceId, voiceType: result.voiceType, tone: result.tone, energy: result.energy, isMain: classifyAsMain(norm, null), identified: true, firstChapter: chIdx, lastUsed: Date.now() };
           for (const seg of segments) {
             if (seg.speaker && normalizeName(seg.speaker) === norm) seg.voice_type = result.voiceType;
           }
@@ -1468,7 +1472,7 @@ function silentlyRegisterCharacters(newChars) {
     const mainVoiceIds = new Set(Object.values(reg).filter(e => e.isMain).map(e => e.voiceId));
     const usedIds = new Set(Object.values(reg).filter(e => e.voiceType === c.voice_type).map(v => v.voiceId));
     const voiceId = pool.find(id => !usedIds.has(id) && !mainVoiceIds.has(id)) || pool.find(id => !usedIds.has(id)) || pool[0];
-    reg[norm] = { voiceId, voiceType: c.voice_type, isMain: classifyAsMain(norm, 0), firstChapter: chIdx, lastUsed: 0 };
+    reg[norm] = { voiceId, voiceType: c.voice_type, isMain: classifyAsMain(norm, null), firstChapter: chIdx, lastUsed: 0 };
   }
   saveLocal();
 }
@@ -1635,27 +1639,31 @@ async function sampleVoice(voiceId, voiceType, btnEl) {
   }
 }
 
-async function fetchVoiceCandidates(identity, count = 6) {
+async function fetchVoiceCandidates(identity, count = 8) {
   const query = buildPersonalityQuery(identity);
   if (!query) return [];
-  const candidates = [];
-  const seen = new Set();
   const reg = getRegistry();
   const allUsed = new Set(Object.values(reg).map(e => e.voiceId));
-  for (let page = 1; page <= 4 && candidates.length < count; page++) {
+  const candidates = [];
+  const seen = new Set();
+  // Use a single large request — pagination often unsupported by the worker proxy
+  for (const q of [query, (identity.gender === 'female' ? 'woman' : 'man')]) {
+    if (candidates.length >= count) break;
     try {
-      const url = WORKER + '/fish/model?page_size=10&page_number=' + page + '&language=en&sort_by=score&title=' + encodeURIComponent(query);
-      const res = await fetch(url);
-      if (!res.ok) break;
+      const url = WORKER + '/fish/model?page_size=20&page_number=1&language=en&sort_by=score&title=' + encodeURIComponent(q);
+      const res = await fetchRetry(url, {}, 2);
+      if (!res.ok) continue;
       const data = await res.json();
       for (const item of (data.items || [])) {
         if (item._id && !seen.has(item._id)) {
           seen.add(item._id);
-          candidates.push({ id: item._id, title: item.title || item._id.slice(0, 8) + '...', inUse: allUsed.has(item._id) });
+          candidates.push({ id: item._id, inUse: allUsed.has(item._id) });
           if (candidates.length >= count) break;
         }
       }
-    } catch(e) { break; }
+    } catch(e) {
+      console.warn('fetchVoiceCandidates failed for query:', q, e);
+    }
   }
   return candidates;
 }
@@ -1664,42 +1672,64 @@ let _pickerChar = null;
 function openVoicePicker(charName) {
   _pickerChar = charName;
   const modal = document.getElementById('voicePickerModal');
+  if (!modal) return;
   const reg = getRegistry();
   const entry = reg[charName];
+  if (!entry) { toast('Character not found in registry'); return; }
   modal.style.display = 'flex';
   document.getElementById('vpCharName').textContent = charName.charAt(0).toUpperCase() + charName.slice(1);
-  const desc = [entry?.tone, entry?.energy, VOICE_TYPES[entry?.voiceType]?.label].filter(Boolean).join(' · ');
-  document.getElementById('vpCharDesc').textContent = desc || 'Unknown personality';
+  const desc = [entry.tone, entry.energy, VOICE_TYPES[entry.voiceType]?.label].filter(Boolean).join(' · ');
+  document.getElementById('vpCharDesc').textContent = desc || VOICE_TYPES[entry.voiceType]?.desc || 'Searching personality-matched voices...';
   const cands = document.getElementById('vpCandidates');
-  cands.innerHTML = '<div style="color:var(--text-mute);text-align:center;padding:20px">Searching voices...</div>';
-  // Fetch candidates async
-  const identity = { gender: entry?.voiceType?.includes('woman') || entry?.voiceType?.includes('girl') ? 'female' : 'male',
-    age: entry?.voiceType?.includes('teen') ? 'teen' : entry?.voiceType?.includes('old') ? 'old' : entry?.voiceType?.includes('child') ? 'child' : entry?.voiceType?.includes('young') ? 'young_adult' : 'adult',
-    tone: entry?.tone, energy: entry?.energy };
-  fetchVoiceCandidates(identity, 6).then(candidates => {
-    cands.innerHTML = '';
-    if (!candidates.length) { cands.innerHTML = '<div style="color:var(--text-mute);text-align:center;padding:20px">No voices found for this personality</div>'; return; }
-    candidates.forEach(c => {
-      const row = document.createElement('div');
-      row.className = 'vp-row';
-      row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border);';
-      const label = document.createElement('div');
-      label.style.cssText = 'flex:1;font-size:13px;color:var(--text-dim);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-      label.textContent = c.id;
-      if (c.id === entry?.voiceId) label.style.color = 'var(--gold)';
-      const sampleBtn = document.createElement('button');
-      sampleBtn.className = 'ctrl csm'; sampleBtn.style.cssText = 'font-size:12px;width:auto;padding:0 10px;';
-      sampleBtn.textContent = '▶ Sample';
-      sampleBtn.onclick = () => sampleVoice(c.id, entry?.voiceType || 'narrator', sampleBtn);
-      const selBtn = document.createElement('button');
-      selBtn.className = 'ctrl csm';
-      selBtn.style.cssText = 'font-size:12px;width:auto;padding:0 10px;' + (c.id === entry?.voiceId ? 'border-color:var(--gold);color:var(--gold);' : '');
-      selBtn.textContent = c.id === entry?.voiceId ? '✓ Current' : 'Select';
-      selBtn.onclick = () => { selectVoiceForChar(charName, c.id); selBtn.textContent = '✓ Selected'; selBtn.style.color = 'var(--gold)'; selBtn.style.borderColor = 'var(--gold)'; };
-      row.append(label, sampleBtn, selBtn);
-      cands.appendChild(row);
+  cands.innerHTML = '<div style="color:var(--text-mute);text-align:center;padding:24px 16px;font-size:13px;">Searching voices...<br><span style="font-size:11px;opacity:.6;">' + (buildPersonalityQuery({tone:entry.tone,energy:entry.energy,gender:entry.voiceType?.includes("woman")||entry.voiceType?.includes("girl")?"female":"male",age:entry.voiceType?.includes("teen")?"teen":entry.voiceType?.includes("old")?"old":entry.voiceType?.includes("child")?"child":entry.voiceType?.includes("young")?"young_adult":"adult"}) || entry.voiceType) + '</span></div>';
+
+  const identity = {
+    gender: entry.voiceType?.includes('woman') || entry.voiceType?.includes('girl') ? 'female' : 'male',
+    age: entry.voiceType?.includes('teen') ? 'teen' : entry.voiceType?.includes('old') ? 'old' : entry.voiceType?.includes('child') ? 'child' : entry.voiceType?.includes('young') ? 'young_adult' : 'adult',
+    tone: entry.tone, energy: entry.energy
+  };
+
+  fetchVoiceCandidates(identity, 8)
+    .then(candidates => {
+      cands.innerHTML = '';
+      if (!candidates.length) {
+        cands.innerHTML = '<div style="color:var(--text-mute);text-align:center;padding:24px;font-size:13px;">No voices found — try resetting and letting the system auto-pick</div>';
+        return;
+      }
+      candidates.forEach(c => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border);';
+        const isCurrent = c.id === entry.voiceId;
+        const label = document.createElement('div');
+        label.style.cssText = 'flex:1;font-size:12px;color:' + (isCurrent ? 'var(--gold)' : 'var(--text-dim)') + ';font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        label.textContent = c.id;
+        if (isCurrent) label.title = 'Currently assigned';
+        const sampleBtn = document.createElement('button');
+        sampleBtn.className = 'ctrl csm';
+        sampleBtn.style.cssText = 'font-size:12px;width:auto;padding:0 10px;flex-shrink:0;';
+        sampleBtn.textContent = '▶';
+        sampleBtn.title = 'Sample this voice';
+        sampleBtn.onclick = () => sampleVoice(c.id, entry.voiceType || 'narrator', sampleBtn);
+        const selBtn = document.createElement('button');
+        selBtn.className = 'ctrl csm';
+        selBtn.style.cssText = 'font-size:12px;width:auto;padding:0 12px;flex-shrink:0;' + (isCurrent ? 'border-color:var(--gold);color:var(--gold);' : '');
+        selBtn.textContent = isCurrent ? '✓' : 'Use';
+        selBtn.title = isCurrent ? 'Current voice' : 'Assign this voice';
+        selBtn.onclick = () => {
+          selectVoiceForChar(charName, c.id);
+          // Update all select buttons in modal
+          cands.querySelectorAll('button:last-child').forEach(b => { b.textContent = 'Use'; b.style.color = ''; b.style.borderColor = ''; });
+          selBtn.textContent = '✓'; selBtn.style.color = 'var(--gold)'; selBtn.style.borderColor = 'var(--gold)';
+          label.style.color = 'var(--gold)';
+        };
+        row.append(label, sampleBtn, selBtn);
+        cands.appendChild(row);
+      });
+    })
+    .catch(err => {
+      console.error('Voice picker failed:', err);
+      cands.innerHTML = '<div style="color:var(--red);text-align:center;padding:24px;font-size:13px;">Failed to load voices: ' + err.message + '<br><span style="color:var(--text-mute);font-size:11px;">Check console for details</span></div>';
     });
-  });
 }
 
 function closeVoicePicker() {
@@ -1795,7 +1825,21 @@ function renderVoiceList() {
         changeBtn.textContent = '✏ Change';
         changeBtn.onclick = () => openVoicePicker(norm);
 
-        btns.append(sampleBtn, changeBtn);
+        const resetBtn = document.createElement('button');
+        resetBtn.className = 'ctrl csm';
+        resetBtn.style.cssText = 'font-size:12px;width:auto;padding:0 12px;height:32px;border-color:var(--red);color:var(--red);';
+        resetBtn.textContent = '↺ Reset';
+        resetBtn.title = 'Remove voice assignment — system will pick again';
+        resetBtn.onclick = () => {
+          if (!confirm('Reset voice for ' + norm + '? The system will pick a new voice next time they appear.')) return;
+          const reg = getRegistry();
+          delete reg[norm];
+          saveLocal();
+          clearAudioBuffer();
+          toast('Voice reset for ' + norm);
+          renderVoiceList();
+        };
+        btns.append(sampleBtn, changeBtn, resetBtn);
         card.append(top, meta, btns);
         list.appendChild(card);
       });
