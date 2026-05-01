@@ -2,7 +2,7 @@
 // CONFIG
 // ════════════════════════════════════════════════════════
 const GOOGLE_CLIENT_ID = '959112801007-gcl60pqaausbtl1857e9bs22adghfb3g.apps.googleusercontent.com';
-const DRIVE_FOLDER_NAME = 'ORV Reader';
+const DRIVE_FOLDER_NAME = 'Reader';
 const AUDIO_BUFFER_AHEAD = 3;
 const TTS_CHUNK_LIMIT = 1800;
 const FETCH_RETRIES = 3;
@@ -64,7 +64,7 @@ let S = {
 // ════════════════════════════════════════════════════════
 async function initDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('orv_reader_db', 3);
+    const req = indexedDB.open('reader_app_db', 3);
     req.onupgradeneeded = e => {
       const d = e.target.result;
       if (!d.objectStoreNames.contains('epubs')) d.createObjectStore('epubs', { keyPath: 'bookId' });
@@ -121,7 +121,7 @@ async function getCachedSegments(bookId, chIdx) {
 // ════════════════════════════════════════════════════════
 function saveLocal() {
   try {
-    localStorage.setItem('orv_reader', JSON.stringify({
+    localStorage.setItem('reader_app', JSON.stringify({
       keys: S.keys, customVoices: S.customVoices,
       voicePools, voicePoolVersion: VOICE_POOL_VERSION,
       smartIdentify: S.smartIdentify,
@@ -140,7 +140,7 @@ function saveLocal() {
 
 function loadLocal() {
   try {
-    const d = JSON.parse(localStorage.getItem('orv_reader') || '{}');
+    const d = JSON.parse(localStorage.getItem('reader_app') || '{}');
     if (d.keys) S.keys = d.keys;
     if (d.customVoices) S.customVoices = d.customVoices;
     if (d.voicePools && d.voicePoolVersion === VOICE_POOL_VERSION) Object.assign(voicePools, d.voicePools);
@@ -173,7 +173,7 @@ function toggleApiFields() { document.getElementById('apiFields').classList.togg
 
 function saveApiKeys() {
   saveLocal();
-  localStorage.setItem('orv_auto_enter', '1');
+  localStorage.setItem('reader_auto_enter', '1');
   S.user = { name: 'Reader', email: '' };
   enterApp();
   toast('Entered');
@@ -239,7 +239,6 @@ function enterApp() {
   showScreen('app');
   showView('libraryPanel');
   updateUserAvatar();
-  // Pre-fetch all voice pools in background
   prefetchAllVoicePools();
 }
 
@@ -384,34 +383,21 @@ async function downloadEpubFromDrive(bookId) {
 const COLORS = ['#c9a84c','#4c7bc9','#c94c4c','#4cc97b','#c94ca8','#4cc9c9','#c97b4c'];
 
 async function addBook(evt) {
-  console.log('[addBook] Starting');
   const file = evt.target.files[0];
-  if (!file) { console.log('[addBook] No file selected'); return; }
+  if (!file) return;
   evt.target.value = '';
-  console.log('[addBook] File selected:', file.name);
-  
   try {
-    console.log('[addBook] Calling showGenOverlay');
     showGenOverlay('Adding Book', file.name, 'Reading file...');
-    console.log('[addBook] Overlay shown');
-    
     setGenProgress(5);
-    console.log('[addBook] Reading arrayBuffer');
     const arrayBuffer = await file.arrayBuffer();
-    
     setGenProgress(15);
-    setGenStep('Parsing EPUB structure...');
-    console.log('[addBook] Creating ePub instance');
+    setGenStep('Parsing EPUB...');
     const book = ePub(arrayBuffer.slice(0));
-    console.log('[addBook] Waiting for book.ready');
     await book.ready;
-    
     setGenProgress(30);
-    console.log('[addBook] Loading metadata');
     const meta = await book.loaded.metadata;
     const nav = await book.loaded.navigation;
     const title = meta.title || file.name.replace('.epub', '');
-    
     setGenStep('Building chapter list...');
     const id = 'book_' + Date.now();
     const color = COLORS[S.books.length % COLORS.length];
@@ -424,49 +410,35 @@ async function addBook(evt) {
       chapters.push({ id: item.idref, href: item.href, title: (tocMap[href] || 'Chapter ' + (idx+1)).trim() });
       idx++;
     });
-    
     setGenProgress(40);
-    console.log('[addBook] Creating book entry');
-    const bookEntry = { id, title, color, chapters, progress: 0, chapterProgress: {}, voiceMap: {}, characterRegistry: {}, _epub: book };
-    S.books.push(bookEntry);
-    
+    S.books.push({ id, title, color, chapters, progress: 0, chapterProgress: {}, voiceMap: {}, characterRegistry: {}, _epub: book });
     setGenStep('Saving locally...');
-    console.log('[addBook] Saving to IndexedDB');
     await dbSet('epubs', { bookId: id, data: arrayBuffer });
     setGenProgress(60);
-    
     if (S.accessToken && S.driveFolderId) {
-      setGenStep('Uploading to Google Drive...');
-      console.log('[addBook] Starting Drive upload');
+      setGenStep('Uploading to Drive...');
       try {
         await uploadEpubToDrive(id, arrayBuffer, file.name, pct => {
           setGenProgress(60 + pct * 35);
-          setGenStep('Uploading to Drive: ' + Math.round(pct * 100) + '%');
+          setGenStep('Uploading: ' + Math.round(pct * 100) + '%');
         });
         setGenProgress(95);
         toast('Uploaded to Drive');
-      } catch(e) { 
-        console.error('[addBook] Drive upload error:', e);
-        toast('Drive upload failed -- saved locally'); 
+      } catch(e) {
+        console.warn('Drive upload failed:', e);
+        toast('Drive upload failed — saved locally');
       }
     } else {
-      console.log('[addBook] No Drive access, skipping upload');
       setGenProgress(95);
     }
-    
-    setGenStep('Syncing...');
-    console.log('[addBook] Rendering library');
     renderLibrary();
-    console.log('[addBook] Saving sync to Drive');
     await saveSyncToDrive();
     setGenProgress(100);
     await sleep(300);
-    console.log('[addBook] Hiding overlay');
     hideGenOverlay();
     toast('Added: ' + title);
-    console.log('[addBook] Complete');
   } catch(e) {
-    console.error('[addBook] FATAL ERROR:', e);
+    console.error('Failed to add book:', e);
     hideGenOverlay();
     toast('Failed to parse EPUB: ' + e.message);
   }
@@ -495,7 +467,8 @@ async function restoreEpub(book) {
 
 async function deleteBook(bookId, e) {
   if (e) e.stopPropagation();
-  if (!confirm('Remove this book from your library?')) return;
+  const ok = await showConfirm('Remove Book', 'This will remove the book from your library. The file stays on your device.');
+  if (!ok) return;
   const idx = S.books.findIndex(b => b.id === bookId);
   if (idx === -1) return;
   S.books.splice(idx, 1);
@@ -534,7 +507,6 @@ function renderLibrary() {
     bp.appendChild(bpf); info.append(bname, bmeta, bp);
     const ba = document.createElement('div'); ba.className = 'ba';
     const bch = document.createElement('div'); bch.className = 'bch'; bch.textContent = '›';
-    // Bible build button -- shows before opening the book
     const bbible = document.createElement('div');
     bbible.className = 'del';
     bbible.title = 'Build character voices';
@@ -660,7 +632,6 @@ async function loadChapter(chIdx) {
       S.flatWords[S.currentWordIdx].el.scrollIntoView({ block: 'center' });
     }
 
-    // Background: identify unknowns + pre-analyze next chapter
     if (S.smartIdentify) identifyUnknownsInChapter(segments, chIdx).catch(() => {});
     preAnalyzeNextChapter(chIdx);
 
@@ -807,8 +778,6 @@ function normalizeName(name) {
   return name.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ');
 }
 
-// Returns true if the name looks like a real proper name (not a generic descriptor).
-// Generic = instantly side character unless they appear very frequently.
 const GENERIC_DESCRIPTORS = new Set([
   'man','woman','boy','girl','child','person','figure','shadow','voice','stranger',
   'guard','soldier','knight','warrior','mage','hunter','adventurer','merchant',
@@ -832,8 +801,6 @@ function isGenericName(name) {
   return false;
 }
 
-// Named characters are always main candidates.
-// Unnamed/generic characters need 5+ chapter appearances to qualify as main.
 function classifyAsMain(name, appearanceCount = null) {
   if (!isGenericName(name)) {
     // Named character: if we have count data (bible), need 2+ appearances.
@@ -858,7 +825,6 @@ function getVoiceId(voiceType, speakerName) {
   if (S.activeBook?.voiceMap?.[voiceType]) return S.activeBook.voiceMap[voiceType];
   if (S.customVoices[voiceType]) return S.customVoices[voiceType];
   const pool = voicePools[voiceType] || [];
-  // NEVER assign a voice if the correct pool is empty
   if (!pool.length) return null;
 
   if (speakerName) {
@@ -913,7 +879,6 @@ async function prefetchAllVoicePools() {
   const types = Object.keys(VOICE_TYPES);
   const missing = types.filter(t => (voicePools[t]?.length || 0) < 3);
   if (!missing.length) { fixMisassignedVoices(); return; }
-  // Stagger requests 300ms apart to avoid hammering API
   for (const type of missing) {
     await fetchVoicePool(type);
     await sleep(300);
@@ -937,7 +902,6 @@ function fixMisassignedVoices() {
     }
   }
   if (fixed > 0) {
-    console.log('Fixed', fixed, 'misassigned voices');
     saveLocal();
     if (S.activeBook) clearAudioBuffer();
   }
@@ -968,9 +932,8 @@ async function fetchVoicePool(voiceType) {
     if (collected.length) {
       voicePools[voiceType] = collected;
       saveLocal();
-      console.log('Voice pool for', voiceType, ':', collected.length, 'voices');
     } else {
-      console.warn('No voices found for', voiceType);
+      console.warn('No voices found for pool:', voiceType);
     }
   })();
   S.poolFetchPromises[voiceType] = p;
@@ -981,9 +944,6 @@ async function prefetchChapterVoices(segments) {
   const needed = [...new Set(segments.map(s => s.voice_type || 'narrator'))];
   const missing = needed.filter(t => (voicePools[t]?.length || 0) < 3 && !S.customVoices[t]);
   if (missing.length) await Promise.all(missing.map(t => fetchVoicePool(t)));
-  // IMPORTANT: never fall back narrator pool for other types
-  // If pool still empty after fetch, leave it empty -- getVoiceId returns null
-  // and Fish Audio uses its own default voice (better than wrong gender)
   renderVoiceList();
 }
 
@@ -1070,8 +1030,6 @@ async function bufferSegment(segIdx) {
   const segWords = S.flatWords.filter(w => w.segIdx === segIdx);
   if (!segWords.length) { if (S.bufferToken === myToken) S.audioBuffer[segIdx] = { empty: true }; return; }
   const text = segWords.map(w => w.el.textContent.trim()).join(' ');
-  // For inner_monologue, use the character's own registered voiceType (e.g. young_man for Kim Dokja)
-  // so their inner thoughts sound like them, not a generic monologue pool voice
   let effectiveVoiceType = seg.voice_type || 'narrator';
   if (effectiveVoiceType === 'inner_monologue' && seg.speaker) {
     const reg = getRegistry();
@@ -1355,7 +1313,6 @@ async function lookAheadIdentify(name, fromChIdx, maxChapters = 3) {
 }
 
 function mapIdentityToVoiceType({ gender, age, tone, energy, speech, cadence }) {
-  // Determine the base voice pool (for fallback only)
   let voiceType = 'narrator';
   if (gender === 'male') {
     if (age === 'child') voiceType = 'child';
@@ -1373,14 +1330,11 @@ function mapIdentityToVoiceType({ gender, age, tone, energy, speech, cadence }) 
   return { voiceType, tone: tone || cadence || null, energy: energy || null, speech: speech || null };
 }
 
-// Build a descriptive Fish Audio search query from personality traits
-// e.g. { gender:'male', age:'young_adult', tone:'sardonic', energy:'low' } → "tired sarcastic young man"
 function buildPersonalityQuery({ gender, age, tone, energy, speech }) {
   const genderWord = gender === 'female' ? 'woman' : 'man';
   const ageMap = { child: 'child', teen: 'teenage', young_adult: 'young', adult: 'adult', old: 'elderly' };
   const ageWord = ageMap[age] || 'adult';
 
-  // Tone → descriptive adjectives
   const toneMap = {
     sardonic: 'dry sarcastic', dry: 'dry sarcastic', deadpan: 'dry deadpan',
     warm: 'warm friendly', cheerful: 'cheerful upbeat', bright: 'bright cheerful',
@@ -1393,15 +1347,13 @@ function buildPersonalityQuery({ gender, age, tone, energy, speech }) {
   };
   const toneWords = toneMap[tone] || '';
 
-  // Low energy → add weary/quiet modifier unless tone already covers it
   const energyWords = (energy === 'low' && !toneWords.includes('tired') && !toneWords.includes('weary') && !toneWords.includes('quiet'))
     ? 'quiet' : '';
 
   const parts = [toneWords, energyWords, ageWord, genderWord].filter(Boolean);
-  return [...new Set(parts)].join(' '); // dedupe, e.g. "dry sarcastic young man"
+  return [...new Set(parts)].join(' ');
 }
 
-// Search Fish Audio directly with a personality query, return a voice ID or null
 async function fetchPersonalityVoice(identity, fallbackVoiceType) {
   const query = buildPersonalityQuery(identity);
   if (!query) return null;
@@ -1412,7 +1364,6 @@ async function fetchPersonalityVoice(identity, fallbackVoiceType) {
     const data = await res.json();
     const items = data.items || [];
     if (!items.length) return null;
-    // Pick the top result that isn't already in use by another character
     const reg = getRegistry();
     const used = new Set(Object.values(reg).map(e => e.voiceId));
     const fresh = items.find(it => it._id && !used.has(it._id));
@@ -1447,12 +1398,11 @@ async function identifyUnknownsInChapter(segments, chIdx) {
         const usedIds = new Set(Object.values(reg).filter(e => e.voiceType === result.voiceType).map(v => v.voiceId));
         const voiceId = pool.find(id => !usedIds.has(id)) || pool[0];
         if (voiceId) {
-          reg[norm] = { voiceId, voiceType: result.voiceType, tone: result.tone, energy: result.energy, isMain: classifyAsMain(norm, null), identified: true, firstChapter: chIdx, lastUsed: Date.now() };
+          reg[norm] = { voiceId, voiceType: result.voiceType, tone: result.tone, energy: result.energy, isMain: classifyAsMain(norm, null), identified: true, firstChapter: S.activeChIdx || 0, lastUsed: Date.now() };
           for (const seg of segments) {
             if (seg.speaker && normalizeName(seg.speaker) === norm) seg.voice_type = result.voiceType;
           }
           saveLocal();
-          console.log('Identified', name, '->', result.voiceType, result.cadence ? '('+result.cadence+')' : '');
         }
       }
     }));
@@ -1467,12 +1417,11 @@ function silentlyRegisterCharacters(newChars) {
     const norm = normalizeName(c.name);
     if (!norm || reg[norm]) continue;
     const pool = voicePools[c.voice_type] || [];
-    // Never fall back to narrator pool -- skip if correct pool not ready
-    if (!pool.length) continue;
+      if (!pool.length) continue;
     const mainVoiceIds = new Set(Object.values(reg).filter(e => e.isMain).map(e => e.voiceId));
     const usedIds = new Set(Object.values(reg).filter(e => e.voiceType === c.voice_type).map(v => v.voiceId));
     const voiceId = pool.find(id => !usedIds.has(id) && !mainVoiceIds.has(id)) || pool.find(id => !usedIds.has(id)) || pool[0];
-    reg[norm] = { voiceId, voiceType: c.voice_type, isMain: classifyAsMain(norm, null), firstChapter: chIdx, lastUsed: 0 };
+    reg[norm] = { voiceId, voiceType: c.voice_type, isMain: classifyAsMain(norm, null), firstChapter: S.activeChIdx || 0, lastUsed: 0 };
   }
   saveLocal();
 }
@@ -1554,7 +1503,6 @@ async function buildCharacterBible(progressCb) {
         voiceId, voiceType: info.voiceType, tone: info.tone, energy: info.energy,
         isMain, firstChapter: info.firstChapter ?? 0, identified: true, lastUsed: 0
       };
-      console.log('Bible:', info.name, isMain ? '[MAIN]' : '[SIDE]', '->', buildPersonalityQuery(info), '| voice:', voiceId);
     }
   }
   saveLocal();
@@ -1646,7 +1594,6 @@ async function fetchVoiceCandidates(identity, count = 8) {
   const allUsed = new Set(Object.values(reg).map(e => e.voiceId));
   const candidates = [];
   const seen = new Set();
-  // Use a single large request — pagination often unsupported by the worker proxy
   for (const q of [query, (identity.gender === 'female' ? 'woman' : 'man')]) {
     if (candidates.length >= count) break;
     try {
@@ -1674,6 +1621,81 @@ async function fetchVoiceCandidates(identity, count = 8) {
 }
 
 let _pickerChar = null;
+let _pickerVoiceType = null;
+
+function _renderPickerCandidates(candidates, entry, charName) {
+  const cands = document.getElementById('vpCandidates');
+  cands.innerHTML = '';
+  if (!candidates.length) {
+    cands.innerHTML = '<div style="color:var(--text-mute);text-align:center;padding:24px;font-size:13px;">No voices found — try a different search term</div>';
+    return;
+  }
+  candidates.forEach(c => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border);';
+    const isCurrent = c.id === entry.voiceId;
+    const label = document.createElement('div');
+    label.style.cssText = 'flex:1;min-width:0;';
+    const nameLine = document.createElement('div');
+    nameLine.style.cssText = 'font-size:13px;font-weight:600;color:' + (isCurrent ? 'var(--gold)' : 'var(--text)') + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    nameLine.textContent = c.name || c.id;
+    const descLine = document.createElement('div');
+    descLine.style.cssText = 'font-size:11px;color:var(--text-mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px;';
+    descLine.textContent = c.description || c.id.slice(0, 16) + '…';
+    label.append(nameLine, descLine);
+    if (isCurrent) label.title = 'Currently assigned';
+    const sampleBtn = document.createElement('button');
+    sampleBtn.className = 'ctrl csm';
+    sampleBtn.style.cssText = 'font-size:12px;width:auto;padding:0 10px;flex-shrink:0;';
+    sampleBtn.textContent = '▶';
+    sampleBtn.title = 'Sample this voice';
+    sampleBtn.onclick = () => sampleVoice(c.id, entry.voiceType || 'narrator', sampleBtn);
+    const selBtn = document.createElement('button');
+    selBtn.className = 'ctrl csm';
+    selBtn.style.cssText = 'font-size:12px;width:auto;padding:0 12px;flex-shrink:0;' + (isCurrent ? 'border-color:var(--gold);color:var(--gold);' : '');
+    selBtn.textContent = isCurrent ? '✓' : 'Use';
+    selBtn.title = isCurrent ? 'Current voice' : 'Assign this voice';
+    selBtn.onclick = () => {
+      selectVoiceForChar(charName, c.id);
+      cands.querySelectorAll('.vp-selbtn').forEach(b => { b.textContent = 'Use'; b.style.color = ''; b.style.borderColor = ''; });
+      cands.querySelectorAll('.vp-nameline').forEach(n => { n.style.color = 'var(--text)'; });
+      selBtn.textContent = '✓'; selBtn.style.color = 'var(--gold)'; selBtn.style.borderColor = 'var(--gold)';
+      nameLine.style.color = 'var(--gold)';
+    };
+    selBtn.classList.add('vp-selbtn');
+    nameLine.classList.add('vp-nameline');
+    row.append(label, sampleBtn, selBtn);
+    cands.appendChild(row);
+  });
+}
+
+async function vpRunSearch() {
+  const input = document.getElementById('vpSearchInput');
+  const query = input?.value?.trim();
+  if (!query || !_pickerChar) return;
+  const reg = getRegistry();
+  const entry = reg[_pickerChar];
+  if (!entry) return;
+  const cands = document.getElementById('vpCandidates');
+  cands.innerHTML = '<div style="color:var(--text-mute);text-align:center;padding:24px;font-size:13px;">Searching for "' + query + '"…</div>';
+  try {
+    const allUsed = new Set(Object.values(reg).map(e => e.voiceId));
+    const url = WORKER + '/fish/model?page_size=20&page_number=1&language=en&sort_by=score&title=' + encodeURIComponent(query);
+    const res = await fetchRetry(url, {}, 2);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const candidates = (data.items || []).slice(0, 12).map(item => ({
+      id: item._id,
+      name: item.title || item.name || '',
+      description: item.description || item.tags?.join(', ') || '',
+      inUse: allUsed.has(item._id)
+    }));
+    _renderPickerCandidates(candidates, entry, _pickerChar);
+  } catch(e) {
+    cands.innerHTML = '<div style="color:var(--red);text-align:center;padding:24px;font-size:13px;">Search failed: ' + e.message + '</div>';
+  }
+}
+
 function openVoicePicker(charName) {
   _pickerChar = charName;
   const modal = document.getElementById('voicePickerModal');
@@ -1681,12 +1703,25 @@ function openVoicePicker(charName) {
   const reg = getRegistry();
   const entry = reg[charName];
   if (!entry) { toast('Character not found in registry'); return; }
+  _pickerVoiceType = entry.voiceType || 'narrator';
+
+  const searchInput = document.getElementById('vpSearchInput');
+  if (searchInput) {
+    searchInput.value = '';
+    searchInput.onkeydown = e => { if (e.key === 'Enter') vpRunSearch(); };
+  }
+
   modal.style.display = 'flex';
   document.getElementById('vpCharName').textContent = charName.charAt(0).toUpperCase() + charName.slice(1);
   const desc = [entry.tone, entry.energy, VOICE_TYPES[entry.voiceType]?.label].filter(Boolean).join(' · ');
   document.getElementById('vpCharDesc').textContent = desc || VOICE_TYPES[entry.voiceType]?.desc || 'Searching personality-matched voices...';
   const cands = document.getElementById('vpCandidates');
-  cands.innerHTML = '<div style="color:var(--text-mute);text-align:center;padding:24px 16px;font-size:13px;">Searching voices...<br><span style="font-size:11px;opacity:.6;">' + (buildPersonalityQuery({tone:entry.tone,energy:entry.energy,gender:entry.voiceType?.includes("woman")||entry.voiceType?.includes("girl")?"female":"male",age:entry.voiceType?.includes("teen")?"teen":entry.voiceType?.includes("old")?"old":entry.voiceType?.includes("child")?"child":entry.voiceType?.includes("young")?"young_adult":"adult"}) || entry.voiceType) + '</span></div>';
+  const personalityQuery = buildPersonalityQuery({
+    tone: entry.tone, energy: entry.energy,
+    gender: entry.voiceType?.includes('woman') || entry.voiceType?.includes('girl') ? 'female' : 'male',
+    age: entry.voiceType?.includes('teen') ? 'teen' : entry.voiceType?.includes('old') ? 'old' : entry.voiceType?.includes('child') ? 'child' : entry.voiceType?.includes('young') ? 'young_adult' : 'adult'
+  });
+  cands.innerHTML = '<div style="color:var(--text-mute);text-align:center;padding:24px 16px;font-size:13px;">Searching voices…<br><span style="font-size:11px;opacity:.6;">' + (personalityQuery || entry.voiceType) + '</span></div>';
 
   const identity = {
     gender: entry.voiceType?.includes('woman') || entry.voiceType?.includes('girl') ? 'female' : 'male',
@@ -1694,49 +1729,8 @@ function openVoicePicker(charName) {
     tone: entry.tone, energy: entry.energy
   };
 
-  fetchVoiceCandidates(identity, 8)
-    .then(candidates => {
-      cands.innerHTML = '';
-      if (!candidates.length) {
-        cands.innerHTML = '<div style="color:var(--text-mute);text-align:center;padding:24px;font-size:13px;">No voices found — try resetting and letting the system auto-pick</div>';
-        return;
-      }
-      candidates.forEach(c => {
-        const row = document.createElement('div');
-        row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border);';
-        const isCurrent = c.id === entry.voiceId;
-        const label = document.createElement('div');
-        label.style.cssText = 'flex:1;min-width:0;';
-        const nameLine = document.createElement('div');
-        nameLine.style.cssText = 'font-size:13px;font-weight:600;color:' + (isCurrent ? 'var(--gold)' : 'var(--text)') + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-        nameLine.textContent = c.name || c.id;
-        const descLine = document.createElement('div');
-        descLine.style.cssText = 'font-size:11px;color:var(--text-mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px;';
-        descLine.textContent = c.description || c.id.slice(0, 16) + '…';
-        label.append(nameLine, descLine);
-        if (isCurrent) label.title = 'Currently assigned';
-        const sampleBtn = document.createElement('button');
-        sampleBtn.className = 'ctrl csm';
-        sampleBtn.style.cssText = 'font-size:12px;width:auto;padding:0 10px;flex-shrink:0;';
-        sampleBtn.textContent = '▶';
-        sampleBtn.title = 'Sample this voice';
-        sampleBtn.onclick = () => sampleVoice(c.id, entry.voiceType || 'narrator', sampleBtn);
-        const selBtn = document.createElement('button');
-        selBtn.className = 'ctrl csm';
-        selBtn.style.cssText = 'font-size:12px;width:auto;padding:0 12px;flex-shrink:0;' + (isCurrent ? 'border-color:var(--gold);color:var(--gold);' : '');
-        selBtn.textContent = isCurrent ? '✓' : 'Use';
-        selBtn.title = isCurrent ? 'Current voice' : 'Assign this voice';
-        selBtn.onclick = () => {
-          selectVoiceForChar(charName, c.id);
-          // Update all select buttons in modal
-          cands.querySelectorAll('button:last-child').forEach(b => { b.textContent = 'Use'; b.style.color = ''; b.style.borderColor = ''; });
-          selBtn.textContent = '✓'; selBtn.style.color = 'var(--gold)'; selBtn.style.borderColor = 'var(--gold)';
-          nameLine.style.color = 'var(--gold)';
-        };
-        row.append(label, sampleBtn, selBtn);
-        cands.appendChild(row);
-      });
-    })
+  fetchVoiceCandidates(identity, 12)
+    .then(candidates => _renderPickerCandidates(candidates, entry, charName))
     .catch(err => {
       console.error('Voice picker failed:', err);
       cands.innerHTML = '<div style="color:var(--red);text-align:center;padding:24px;font-size:13px;">Failed to load voices: ' + err.message + '<br><span style="color:var(--text-mute);font-size:11px;">Check console for details</span></div>';
@@ -1762,7 +1756,6 @@ function renderVoiceList() {
   const noSpoiler = localStorage.getItem('nospoiler') === '1';
   const currentCh = S.activeChIdx || 0;
 
-  // ── Smart Identify toggle ──
   const smartRow = document.createElement('div');
   smartRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);margin-bottom:8px;';
   smartRow.innerHTML = '<div><div style="font-size:14px;color:var(--text)">Smart Identification</div>'
@@ -1770,7 +1763,6 @@ function renderVoiceList() {
     + '<input type="checkbox" ' + (S.smartIdentify ? 'checked' : '') + ' onclick="toggleSmartIdentify(this.checked)" style="transform:scale(1.3)">';
   list.appendChild(smartRow);
 
-  // ── No-spoiler toggle ──
   const spoilerRow = document.createElement('div');
   spoilerRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);margin-bottom:12px;';
   spoilerRow.innerHTML = '<div><div style="font-size:14px;color:var(--text)">No-Spoiler Mode</div>'
@@ -1778,7 +1770,6 @@ function renderVoiceList() {
     + '<input type="checkbox" ' + (noSpoiler ? 'checked' : '') + ' onclick="toggleNoSpoiler(this.checked)" style="transform:scale(1.3)">';
   list.appendChild(spoilerRow);
 
-  // ── Bible build button ──
   const bibleBtn = document.createElement('button');
   bibleBtn.className = 'pcbtn';
   bibleBtn.style.cssText = 'margin-bottom:12px;background:var(--gold-glow);border-color:var(--gold);color:var(--gold2);width:100%;';
@@ -1786,7 +1777,6 @@ function renderVoiceList() {
   bibleBtn.onclick = () => runBibleBuild();
   list.appendChild(bibleBtn);
 
-  // ── Character list ──
   const entries = Object.entries(reg);
   if (!entries.length) {
     const empty = document.createElement('div');
@@ -1841,8 +1831,9 @@ function renderVoiceList() {
         resetBtn.style.cssText = 'font-size:12px;width:auto;padding:0 12px;height:32px;border-color:var(--red);color:var(--red);';
         resetBtn.textContent = '↺ Reset';
         resetBtn.title = 'Remove voice assignment — system will pick again';
-        resetBtn.onclick = () => {
-          if (!confirm('Reset voice for ' + norm + '? The system will pick a new voice next time they appear.')) return;
+        resetBtn.onclick = async () => {
+          const ok = await showConfirm('Reset Voice', 'The system will pick a new voice for ' + (norm.charAt(0).toUpperCase() + norm.slice(1)) + ' next time they appear.');
+          if (!ok) return;
           const reg = getRegistry();
           delete reg[norm];
           saveLocal();
@@ -1867,7 +1858,6 @@ function renderVoiceList() {
     }
   }
 
-  // ── Side character voice banks (collapsed) ──
   const banksToggle = document.createElement('div');
   banksToggle.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:10px 0;margin-top:8px;border-top:1px solid var(--border);cursor:pointer;';
   banksToggle.innerHTML = '<div style="font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-mute)">Side Character Voice Banks</div><div id="bankChevron" style="color:var(--text-mute);font-size:14px;">▸</div>';
@@ -1896,13 +1886,15 @@ function renderVoiceList() {
 }
 
 function toggleSmartIdentify(on) { S.smartIdentify = !!on; saveLocal(); toast(on ? 'Smart Identify ON' : 'Smart Identify OFF'); }
+function toggleNoSpoiler(on) { localStorage.setItem('nospoiler', on ? '1' : '0'); renderVoiceList(); }
 function toggleCharacterVisibility(show) { localStorage.setItem('show_character_voices', show ? '1' : '0'); renderVoiceList(); }
 function setCharVoiceOverride(k, v) { const reg=getRegistry(); if(reg[k]){reg[k].voiceId=v.trim();saveLocal();} }
 function setVoiceOverride(t, v) { S.customVoices[t]=v.trim(); if(S.activeBook){if(!S.activeBook.voiceMap)S.activeBook.voiceMap={};S.activeBook.voiceMap[t]=v.trim();} }
 
 async function runBibleBuild() {
   if (!S.activeBook) { toast('Open a book first'); return; }
-  if (!confirm('This will scan the entire book to identify all characters.\n\nThis uses DeepSeek API and may take 1-3 minutes.\nContinue?')) return;
+  const ok = await showConfirm('Build Character Bible', 'Scans the full book to identify all characters. Uses DeepSeek API — takes 1–3 minutes.', 'Build', false);
+  if (!ok) return;
   showGenOverlay('Building Character Bible', 'Pre-scanning book for character identification...', 'Starting...');
   try {
     const count = await buildCharacterBible(({ phase, pct }) => {
@@ -1937,6 +1929,23 @@ function setGenProgress(pct) {
   const fill = document.getElementById('genProgressFill');
   bar.classList.add('show');
   fill.style.width = Math.min(100, Math.max(0, pct)).toFixed(1) + '%';
+}
+
+let _confirmResolve = null;
+function showConfirm(title, msg, okLabel = 'Confirm', danger = true) {
+  document.getElementById('confirmTitle').textContent = title;
+  document.getElementById('confirmMsg').textContent = msg;
+  const okBtn = document.getElementById('confirmOk');
+  okBtn.textContent = okLabel;
+  okBtn.style.background = danger ? 'var(--red)' : 'var(--gold)';
+  okBtn.style.borderColor = danger ? 'var(--red)' : 'var(--gold)';
+  okBtn.style.color = '#0c0c10';
+  document.getElementById('confirmModal').style.display = 'flex';
+  return new Promise(res => { _confirmResolve = res; });
+}
+function resolveConfirm(val) {
+  document.getElementById('confirmModal').style.display = 'none';
+  if (_confirmResolve) { _confirmResolve(val); _confirmResolve = null; }
 }
 
 let toastTimer;
@@ -1986,7 +1995,7 @@ document.addEventListener('keydown', e => {
     });
   }
 
-  if (localStorage.getItem('orv_auto_enter')) { S.user = { name: 'Reader' }; enterApp(); }
+  if (localStorage.getItem('reader_auto_enter')) { S.user = { name: 'Reader' }; enterApp(); }
 
   window.addEventListener('resize', () => {
     S.isMobile = window.innerWidth < 768;

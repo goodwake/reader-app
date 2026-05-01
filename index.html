@@ -6,22 +6,25 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Reader">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="application-name" content="Reader">
 <meta name="theme-color" content="#0c0c10">
+<meta name="msapplication-TileColor" content="#0c0c10">
+<link rel="manifest" href="manifest.json">
 <title>Reader</title>
 <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300;1,400&family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet">
 <style>
-@font-face{font-family:'OpenDyslexic';src:url('https://cdn.jsdelivr.net/npm/open-dyslexic@1.0.3/open-dyslexic-regular.woff2') format('woff2');font-weight:normal}
-@font-face{font-family:'OpenDyslexic';src:url('https://cdn.jsdelivr.net/npm/open-dyslexic@1.0.3/open-dyslexic-bold.woff2') format('woff2');font-weight:bold}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
   --bg:#0c0c10;--bg2:#111118;--surface:#15151c;--surface2:#1c1c26;
   --border:#272735;--border2:#343448;--text:#e4dfd8;--text-dim:#7878a0;--text-mute:#45455a;
   --gold:#c9a84c;--gold2:#e8c97a;--gold-glow:#c9a84c1a;--blue:#5080d0;--red:#c94c4c;
   --font-size:19px;--line-height:2.1;
-  --reader-font:'OpenDyslexic',Georgia,serif;--ui-font:'Crimson Pro',Georgia,serif;--mono:'JetBrains Mono',monospace;
+  --reader-font:'Crimson Pro',Georgia,serif;--ui-font:'Crimson Pro',Georgia,serif;--mono:'JetBrains Mono',monospace;
   --sidebar-w:260px;--safe-top:env(safe-area-inset-top,0px);--safe-bottom:env(safe-area-inset-bottom,0px);
+  --trans:.15s ease;
 }
-html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--ui-font);overflow:hidden;-webkit-tap-highlight-color:transparent;-webkit-text-size-adjust:100%}
+html,body{height:100dvh;height:100vh;background:var(--bg);color:var(--text);font-family:var(--ui-font);overflow:hidden;-webkit-tap-highlight-color:transparent;-webkit-text-size-adjust:100%}
 .screen{display:none;height:100%;width:100%;position:absolute;inset:0}
 .screen.active{display:flex}
 
@@ -33,7 +36,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--u
 .l-ti{font-size:clamp(32px,7vw,50px);font-weight:300;text-align:center;line-height:1.1}
 .l-ti em{color:var(--gold);font-style:italic}
 .l-su{font-size:15px;color:var(--text-dim);text-align:center;line-height:1.7;font-weight:300}
-.gbtn{display:flex;align-items:center;justify-content:center;gap:12px;background:var(--surface);border:1px solid var(--border2);border-radius:14px;padding:14px 28px;cursor:pointer;font-family:var(--ui-font);font-size:17px;color:var(--text);width:100%;transition:border-color .2s,background .2s;-webkit-appearance:none}
+.gbtn{display:flex;align-items:center;justify-content:center;gap:12px;background:var(--surface);border:1px solid var(--border2);border-radius:14px;padding:14px 28px;cursor:pointer;font-family:var(--ui-font);font-size:17px;color:var(--text);width:100%;transition:border-color var(--trans),background var(--trans),transform var(--trans);-webkit-appearance:none}
 .gbtn:hover{border-color:var(--gold);background:var(--surface2)}.gbtn:active{transform:scale(.98)}
 .gi{width:20px;height:20px;flex-shrink:0}
 .atog{font-size:13px;color:var(--text-mute);cursor:pointer;text-decoration:underline;text-underline-offset:3px}
@@ -51,7 +54,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--u
 .slogo{font-size:18px;font-weight:300}.slogo em{color:var(--gold);font-style:italic}
 .uav{width:34px;height:34px;border-radius:50%;background:var(--surface2);border:1px solid var(--border2);display:flex;align-items:center;justify-content:center;font-size:14px;color:var(--text-dim);cursor:pointer;overflow:hidden;flex-shrink:0}
 .snav{display:flex;flex-direction:column;gap:2px;padding:12px 10px;border-bottom:1px solid var(--border)}
-.nit{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:10px;cursor:pointer;font-size:15px;color:var(--text-dim);transition:background .15s,color .15s}
+.nit{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:10px;cursor:pointer;font-size:15px;color:var(--text-dim);transition:background var(--trans),color var(--trans)}
 .nit:hover{background:var(--surface2);color:var(--text)}.nit.active{background:var(--gold-glow);color:var(--gold2)}
 .nic{font-size:16px;width:20px;text-align:center}
 .addbtn{margin:12px 10px;display:flex;align-items:center;justify-content:center;gap:10px;padding:12px;border:1.5px dashed var(--border2);border-radius:12px;cursor:pointer;font-family:var(--ui-font);font-size:15px;color:var(--text-dim);transition:border-color .2s,color .2s;-webkit-appearance:none;background:transparent}
@@ -67,9 +70,9 @@ input[type=file]{display:none}
 .lgrid{flex:1;overflow-y:auto;padding:20px 24px;display:grid;gap:14px;-webkit-overflow-scrolling:touch}
 .desktop .lgrid{grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
 .mobile .lgrid{grid-template-columns:1fr}
-.bc{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:18px 20px;display:flex;gap:14px;align-items:center;cursor:pointer;transition:border-color .2s,background .2s;position:relative;overflow:hidden}
+.bc{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:18px 20px;display:flex;gap:14px;align-items:center;cursor:pointer;transition:border-color var(--trans),background var(--trans),transform var(--trans),box-shadow var(--trans);position:relative;overflow:hidden}
 .bc::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--cc,var(--gold));border-radius:3px 0 0 3px}
-.bc:hover{border-color:var(--border2);background:var(--surface2)}.bc:active{transform:scale(.99)}
+.bc:hover{border-color:var(--border2);background:var(--surface2);box-shadow:0 4px 20px #0004}.bc:active{transform:scale(.99)}
 .bsp{width:46px;height:62px;border-radius:6px;background:var(--cc,var(--gold));opacity:.12;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
 .bi{flex:1;min-width:0}
 .bn{font-size:16px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -78,8 +81,8 @@ input[type=file]{display:none}
 .bpf{height:100%;border-radius:99px;transition:width .4s}
 .ba{display:flex;flex-direction:column;align-items:center;gap:6px;flex-shrink:0}
 .bch{color:var(--text-mute);font-size:18px}
-.del{font-size:11px;color:var(--text-mute);cursor:pointer;width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:6px;transition:color .15s,background .15s}
-.del:hover{color:var(--red);background:#c94c4c18}
+.del{font-size:11px;color:var(--text-mute);cursor:pointer;width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:6px;transition:color var(--trans),background var(--trans),transform var(--trans)}
+.del:hover{color:var(--red);background:#c94c4c18;transform:scale(1.1)}
 .elib{padding:60px 24px;text-align:center;color:var(--text-mute);font-size:16px;line-height:2}
 
 /* CHAPTERS */
@@ -90,8 +93,8 @@ input[type=file]{display:none}
 .chsr input{background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-family:var(--ui-font);font-size:15px;padding:9px 14px;outline:none;width:100%;-webkit-appearance:none}
 .chsr input:focus{border-color:var(--gold)}
 .chl{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
-.chi{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--border);cursor:pointer;transition:background .15s}
-.chi:hover{background:var(--surface2)}.chi.read .chn{color:var(--text-dim)}
+.chi{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--border);cursor:pointer;transition:background var(--trans),padding-left var(--trans)}
+.chi:hover{background:var(--surface2);padding-left:20px}.chi.read .chn{color:var(--text-dim)}
 .chno{font-size:12px;color:var(--text-mute);min-width:32px;font-family:var(--mono)}
 .chn{font-size:15px;color:var(--text);flex:1}
 .chd{width:6px;height:6px;border-radius:50%;background:var(--gold);opacity:0;flex-shrink:0}
@@ -141,8 +144,8 @@ input[type=file]{display:none}
 .pf{height:100%;background:var(--gold);border-radius:99px;transition:width .15s;width:0;pointer-events:none}
 .pp{font-size:11px;color:var(--text-mute);min-width:30px;text-align:right;font-family:var(--mono)}
 .plr{display:flex;align-items:center;justify-content:center;gap:10px}
-.ctrl{background:var(--surface2);border:1px solid var(--border);border-radius:12px;color:var(--text);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background .15s;-webkit-appearance:none;flex-shrink:0}
-.ctrl:hover{background:var(--border)}.ctrl:active{opacity:.8}
+.ctrl{background:var(--surface2);border:1px solid var(--border);border-radius:12px;color:var(--text);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background var(--trans),border-color var(--trans),transform var(--trans),color var(--trans);-webkit-appearance:none;flex-shrink:0}
+.ctrl:hover{background:var(--border)}.ctrl:active{opacity:.8;transform:scale(.95)}
 .csm{width:38px;height:38px;font-size:15px;border-radius:10px}
 .cpla{width:56px;height:56px;font-size:22px;background:var(--gold);border:none;color:#0c0c10;border-radius:50%}
 .cpla:hover{background:var(--gold2)}
@@ -210,6 +213,12 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;heigh
 .vphdr-cls{background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text-dim);width:30px;height:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px;flex-shrink:0}
 .vphdr-cls:hover{color:var(--text);background:var(--border)}
 .vpcands{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
+.vpsearch{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;gap:8px;background:var(--surface)}
+.vpsearch input{flex:1;background:var(--surface2);border:1px solid var(--border2);border-radius:8px;color:var(--text);padding:7px 12px;font-size:13px;outline:none;font-family:var(--sans)}
+.vpsearch input::placeholder{color:var(--text-mute)}
+.vpsearch input:focus{border-color:var(--gold)}
+.vpsearch button{background:var(--surface2);border:1px solid var(--border2);border-radius:8px;color:var(--text-dim);padding:0 14px;font-size:12px;cursor:pointer;white-space:nowrap;flex-shrink:0}
+.vpsearch button:hover{color:var(--text);border-color:var(--gold)}
 </style>
 </head>
 <body>
@@ -393,6 +402,22 @@ window.addEventListener('resize', () => {
 <script src="https://accounts.google.com/gsi/client" async></script>
 <script src="app.js"></script>
 
+<!-- Confirm Modal -->
+<div id="confirmModal" class="vpmodal" style="z-index:200">
+  <div class="vpinner" style="max-width:340px">
+    <div class="vphdr" style="padding:20px 24px 16px">
+      <div class="vphdr-info">
+        <div class="vphdr-name" id="confirmTitle">Are you sure?</div>
+        <div class="vphdr-desc" id="confirmMsg"></div>
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;padding:16px 20px 20px">
+      <button class="ctrl" id="confirmCancel" style="flex:1;height:42px;font-family:var(--ui-font);font-size:15px;" onclick="resolveConfirm(false)">Cancel</button>
+      <button class="ctrl" id="confirmOk" style="flex:1;height:42px;font-family:var(--ui-font);font-size:15px;background:var(--red);border-color:var(--red);color:#fff;" onclick="resolveConfirm(true)">Confirm</button>
+    </div>
+  </div>
+</div>
+
 <!-- Voice Picker Modal -->
 <div id="voicePickerModal" class="vpmodal" onclick="if(event.target===this)closeVoicePicker()">
   <div class="vpinner">
@@ -402,6 +427,10 @@ window.addEventListener('resize', () => {
         <div class="vphdr-desc" id="vpCharDesc">Searching personality-matched voices...</div>
       </div>
       <div class="vphdr-cls" onclick="closeVoicePicker()">X</div>
+    </div>
+    <div class="vpsearch">
+      <input id="vpSearchInput" type="text" placeholder="Search voices… e.g. calm deep woman" />
+      <button onclick="vpRunSearch()">Search</button>
     </div>
     <div class="vpcands" id="vpCandidates"></div>
   </div>
